@@ -1,4 +1,4 @@
-import { invokeLLM, Tool, Message } from "./_core/llm";
+import { invokeLLM, Tool, Message, ToolChoice } from "./_core/llm";
 import { getChunksByUserDocuments, getDocumentsByUserId } from "./db";
 import { notifyOwner } from "./_core/notification";
 
@@ -29,7 +29,7 @@ const AGENT_TOOLS: Tool[] = [
     type: "function",
     function: {
       name: "search_documents",
-      description: "Search through uploaded construction documents to find relevant information. Use this to find specifications, requirements, measurements, or any document content.",
+      description: "ALWAYS use this tool first to search through uploaded construction documents before answering any question. This finds relevant specifications, requirements, measurements, or any document content.",
       parameters: {
         type: "object",
         properties: {
@@ -303,7 +303,6 @@ function executeCalculation(input: Record<string, unknown>): Record<string, unkn
     case "custom":
       if (formula) {
         try {
-          // Simple formula evaluation (in production, use a proper math parser)
           let evalFormula = formula;
           for (const [key, val] of Object.entries(values)) {
             evalFormula = evalFormula.replace(new RegExp(key, 'g'), String(val));
@@ -336,8 +335,18 @@ async function searchDocuments(
   query: string,
   documentTypes?: string[]
 ): Promise<{ chunks: Array<{ content: string; citation: Citation }>; }> {
+  console.log(`[Agent] Searching documents for user ${userId} with query: "${query}"`);
+  
   const documents = await getDocumentsByUserId(userId);
+  console.log(`[Agent] Found ${documents.length} documents for user`);
+  
   const chunks = await getChunksByUserDocuments(userId);
+  console.log(`[Agent] Found ${chunks.length} total chunks for user`);
+  
+  if (chunks.length === 0) {
+    console.log(`[Agent] No chunks found - documents may not be processed yet`);
+    return { chunks: [] };
+  }
   
   // Filter by document types if specified
   let relevantDocs = documents;
@@ -346,15 +355,27 @@ async function searchDocuments(
   }
   const relevantDocIds = new Set(relevantDocs.map(d => d.id));
   
-  // Simple keyword matching (in production, use embeddings/vector search)
-  const queryTerms = query.toLowerCase().split(/\s+/);
+  // Improved keyword matching - search for any word match
+  const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+  console.log(`[Agent] Searching for terms: ${queryTerms.join(', ')}`);
+  
   const matchingChunks = chunks
-    .filter(chunk => {
-      if (!relevantDocIds.has(chunk.documentId)) return false;
+    .map(chunk => {
+      if (!relevantDocIds.has(chunk.documentId)) return null;
       const content = chunk.content.toLowerCase();
-      return queryTerms.some(term => content.includes(term));
+      
+      // Count how many query terms match
+      const matchCount = queryTerms.filter(term => content.includes(term)).length;
+      if (matchCount === 0) return null;
+      
+      return { chunk, matchCount };
     })
-    .slice(0, 10); // Limit results
+    .filter((item): item is { chunk: typeof chunks[0]; matchCount: number } => item !== null)
+    .sort((a, b) => b.matchCount - a.matchCount) // Sort by relevance
+    .slice(0, 10)
+    .map(item => item.chunk);
+  
+  console.log(`[Agent] Found ${matchingChunks.length} matching chunks`);
   
   return {
     chunks: matchingChunks.map(chunk => {
@@ -379,14 +400,48 @@ export async function runAgent(
   userMessage: string,
   conversationHistory: Message[] = []
 ): Promise<AgentResponse> {
+  console.log(`[Agent] Running agent for user ${userId} with message: "${userMessage.substring(0, 100)}..."`);
+  
   const citations: Citation[] = [];
   const toolCalls: ToolCallResult[] = [];
   
   // Get user's documents for context
   const userDocuments = await getDocumentsByUserId(userId);
-  const documentContext = userDocuments.length > 0
-    ? `\n\nAvailable documents:\n${userDocuments.map(d => `- ${d.originalName} (${d.documentType}, ${d.pageCount || 'unknown'} pages)`).join('\n')}`
-    : "\n\nNo documents have been uploaded yet.";
+  const chunks = await getChunksByUserDocuments(userId);
+  
+  console.log(`[Agent] User has ${userDocuments.length} documents and ${chunks.length} chunks`);
+  
+  // PROACTIVE SEARCH: Always search documents first if user has documents
+  let documentContext = "";
+  let preSearchResults: Array<{ content: string; citation: Citation }> = [];
+  
+  if (userDocuments.length > 0 && chunks.length > 0) {
+    // Extract key terms from user message for search
+    const searchResult = await searchDocuments(userId, userMessage);
+    preSearchResults = searchResult.chunks;
+    
+    if (preSearchResults.length > 0) {
+      documentContext = `\n\n**RELEVANT DOCUMENT CONTENT FOUND:**\n${preSearchResults.map((c, i) => 
+        `[Source ${i + 1}: ${c.citation.documentName}${c.citation.pageNumber ? `, Page ${c.citation.pageNumber}` : ''}${c.citation.section ? `, ${c.citation.section}` : ''}]\n${c.content}`
+      ).join('\n\n')}`;
+      
+      // Add citations from pre-search
+      preSearchResults.forEach(c => citations.push(c.citation));
+      
+      // Record this as a tool call
+      toolCalls.push({
+        tool: "search_documents",
+        input: { query: userMessage },
+        output: { found: preSearchResults.length, results: preSearchResults.map(c => ({ content: c.content.substring(0, 200), source: c.citation })) }
+      });
+    } else {
+      documentContext = `\n\nNo directly matching content found in the uploaded documents for this query. The user has ${userDocuments.length} documents uploaded:\n${userDocuments.map(d => `- ${d.originalName} (${d.documentType})`).join('\n')}`;
+    }
+  } else if (userDocuments.length > 0 && chunks.length === 0) {
+    documentContext = `\n\nThe user has ${userDocuments.length} documents uploaded but they are still being processed. Documents:\n${userDocuments.map(d => `- ${d.originalName} (${d.documentType}, status: ${d.processingStatus})`).join('\n')}`;
+  } else {
+    documentContext = "\n\nNo documents have been uploaded yet. Ask the user to upload construction documents to get started.";
+  }
 
   const systemPrompt = `You are an expert construction document AI assistant. You help construction professionals analyze project documents, perform calculations, generate reports, and identify specification conflicts.
 
@@ -398,8 +453,10 @@ Your capabilities include:
 5. **Conflict Detection**: Identify conflicting specifications across different document types
 6. **Specification Extraction**: Extract specific technical specifications and standards
 
-IMPORTANT GUIDELINES:
-- Always cite your sources with document name, page number, and section when referencing document content
+CRITICAL INSTRUCTIONS:
+- When document content is provided below, you MUST use that content to answer the user's question
+- ALWAYS cite your sources with document name, page number, and section when referencing document content
+- If relevant content is found in the documents, base your answer on that content
 - When performing calculations, show your work and explain the formula used
 - When detecting conflicts, clearly identify which documents contain conflicting information
 - Use construction industry terminology appropriately
@@ -413,12 +470,16 @@ ${documentContext}`;
     { role: "user", content: userMessage }
   ];
 
-  // First LLM call to determine tool usage
-  const initialResponse = await invokeLLM({
-    messages,
-    tools: AGENT_TOOLS,
-    toolChoice: "auto"
-  });
+  // LLM call - if we already have search results, don't need tool calls
+  const llmParams: { messages: Message[]; tools?: Tool[]; toolChoice?: ToolChoice } = { messages };
+  
+  // Only provide tools if we didn't find content in pre-search
+  if (preSearchResults.length === 0 && userDocuments.length > 0) {
+    llmParams.tools = AGENT_TOOLS;
+    llmParams.toolChoice = "auto";
+  }
+
+  const initialResponse = await invokeLLM(llmParams);
 
   const assistantMessage = initialResponse.choices[0]?.message;
   
@@ -430,7 +491,7 @@ ${documentContext}`;
     };
   }
 
-  // Handle tool calls if present
+  // Handle additional tool calls if present
   if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
     const toolResults: Message[] = [];
     
@@ -438,6 +499,8 @@ ${documentContext}`;
       const toolName = toolCall.function.name;
       const toolInput = JSON.parse(toolCall.function.arguments);
       let toolOutput: Record<string, unknown>;
+
+      console.log(`[Agent] Executing tool: ${toolName} with input:`, toolInput);
 
       switch (toolName) {
         case "search_documents": {
@@ -449,7 +512,6 @@ ${documentContext}`;
               source: c.citation
             }))
           };
-          // Add citations from search results
           searchResult.chunks.forEach(c => citations.push(c.citation));
           break;
         }
@@ -460,7 +522,6 @@ ${documentContext}`;
         }
 
         case "analyze_schedule": {
-          // Search for schedule-related content
           const scheduleSearch = await searchDocuments(userId, `schedule ${toolInput.analysis_type} timeline milestone`, ["cpm_schedule"]);
           toolOutput = {
             analysis_type: toolInput.analysis_type,
@@ -475,7 +536,6 @@ ${documentContext}`;
         }
 
         case "generate_report": {
-          // Gather relevant content for report
           const reportSearch = await searchDocuments(userId, toolInput.report_type.replace(/_/g, ' '));
           toolOutput = {
             report_type: toolInput.report_type,
@@ -507,7 +567,6 @@ ${documentContext}`;
             potential_conflicts: conflictResults
           };
 
-          // Notify owner if conflicts are detected
           if (conflictResults.some(r => r.sources.length > 1)) {
             await notifyOwner({
               title: "Specification Conflict Detected",
@@ -575,12 +634,15 @@ ${documentContext}`;
     };
   }
 
-  // No tool calls, return direct response
+  // Dedupe citations
+  const citationMap = new Map<string, Citation>();
+  citations.forEach(c => citationMap.set(c.documentId + c.excerpt, c));
+
   return {
     content: typeof assistantMessage.content === 'string' 
       ? assistantMessage.content 
       : JSON.stringify(assistantMessage.content),
-    citations,
+    citations: Array.from(citationMap.values()),
     toolCalls
   };
 }
@@ -591,8 +653,6 @@ export async function* runAgentStream(
   userMessage: string,
   conversationHistory: Message[] = []
 ): AsyncGenerator<{ type: 'content' | 'citation' | 'tool' | 'done'; data: unknown }> {
-  // For now, use non-streaming and yield chunks
-  // In production, implement proper SSE streaming
   const response = await runAgent(userId, userMessage, conversationHistory);
   
   // Yield tool calls first
@@ -606,7 +666,7 @@ export async function* runAgentStream(
   for (let i = 0; i < words.length; i += 3) {
     accumulated += words.slice(i, i + 3).join(' ') + ' ';
     yield { type: 'content', data: accumulated.trim() };
-    await new Promise(resolve => setTimeout(resolve, 50)); // Simulate streaming delay
+    await new Promise(resolve => setTimeout(resolve, 50));
   }
   
   // Yield citations

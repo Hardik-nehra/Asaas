@@ -1,0 +1,8 @@
+{
+  "query": "SELECT * FROM document_chunks LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 3GmqHGQp4yeAHTL.root --database BGF2nUcVwggDdWFhU5h9w8 --execute SELECT * FROM document_chunks LIMIT 5;",
+  "returncode": 1,
+  "logs": [
+    "ERROR 2005 (HY000): Unknown MySQL server host 'gateway03.us-east-1.prod.aws.tidbcloud.com' (-3)"
+  ]
+}

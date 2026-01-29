@@ -41,3 +41,7 @@
 - [x] Report generation endpoint
 - [x] Calculation endpoint
 - [x] Schedule analysis endpoint
+
+## Bugs
+
+- [x] AI agent says it can read documents but doesn't provide answers from document content (FIXED: Added proactive document search)
