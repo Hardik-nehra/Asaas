@@ -62,11 +62,11 @@ export default function DashboardLayout({
       <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-background to-muted">
         <div className="flex flex-col items-center gap-8 p-8 max-w-md w-full">
           <div className="flex flex-col items-center gap-6">
-            <div className="h-20 w-20 rounded-2xl bg-primary/10 flex items-center justify-center">
-              <HardHat className="h-10 w-10 text-primary" />
+            <div className="h-20 w-20 rounded-2xl bg-primary/10 flex items-center justify-center overflow-hidden">
+              <img src="/asaas-logo.png" alt="Asaas" className="h-14 w-14 object-contain" />
             </div>
             <h1 className="text-3xl font-bold tracking-tight text-center">
-              Construction AI Agent
+              Asaas
             </h1>
             <p className="text-sm text-muted-foreground text-center max-w-sm">
               Your expert construction document analyzer. Upload plans, specifications, or schedules and get instant AI-powered insights.
@@ -176,9 +176,9 @@ function DashboardLayoutContent({
               </button>
               {!isCollapsed ? (
                 <div className="flex items-center gap-2 min-w-0">
-                  <HardHat className="h-5 w-5 text-primary shrink-0" />
+                  <img src="/asaas-logo.png" alt="Asaas" className="h-6 w-6 shrink-0" />
                   <span className="font-semibold tracking-tight truncate">
-                    Construction AI
+                    Asaas
                   </span>
                 </div>
               ) : null}

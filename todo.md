@@ -45,3 +45,8 @@
 ## Bugs
 
 - [x] AI agent says it can read documents but doesn't provide answers from document content (FIXED: Added proactive document search)
+
+## Branding Updates
+
+- [x] Create Asaas logo
+- [x] Update sidebar name to "Asaas"

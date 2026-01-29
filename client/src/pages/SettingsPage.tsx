@@ -161,7 +161,7 @@ export default function SettingsPage() {
           <div className="grid gap-2 text-sm">
             <div className="flex justify-between">
               <span className="text-muted-foreground">Application</span>
-              <span className="font-medium">Construction AI Agent</span>
+              <span className="font-medium">Asaas</span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Version</span>
